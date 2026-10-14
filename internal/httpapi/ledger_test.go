@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/url"
 	"testing"
-	"time"
 )
 
 // TestPaymentFlow walks a typical wallet scenario end to end and checks every
@@ -185,13 +184,17 @@ func TestStatementPaginationAndHistoricalBalance(t *testing.T) {
 	bank := a.account(l, "bank", "ASSET", "USD", true)
 	w := a.account(l, "wallet", "LIABILITY", "USD", false)
 
-	var midpoint time.Time
+	var midpoint string
 	for i := 1; i <= 7; i++ {
-		a.transfer(l, bank, w, "100").must(t, 201)
+		r := a.transfer(l, bank, w, "100").must(t, 201)
 		if i == 3 {
-			time.Sleep(5 * time.Millisecond)
-			midpoint = time.Now().UTC()
-			time.Sleep(5 * time.Millisecond)
+			// Use the database's own timestamp: the DB clock (in a container)
+			// may be skewed relative to the test process.
+			for _, e := range r.Body["entries"].([]any) {
+				if e := e.(map[string]any); e["account_id"] == w {
+					midpoint = e["created_at"].(string)
+				}
+			}
 		}
 	}
 
@@ -217,7 +220,7 @@ func TestStatementPaginationAndHistoricalBalance(t *testing.T) {
 	}
 
 	// Point-in-time balance after the third deposit.
-	r := a.do("GET", "/v1/accounts/"+w+"/balance?as_of="+url.QueryEscape(midpoint.Format(time.RFC3339Nano)), nil).must(t, 200)
+	r := a.do("GET", "/v1/accounts/"+w+"/balance?as_of="+url.QueryEscape(midpoint), nil).must(t, 200)
 	if r.Body["posted"] != "300" || r.Body["version"] != float64(3) {
 		t.Fatalf("historical balance: %s", r.Raw)
 	}

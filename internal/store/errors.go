@@ -32,7 +32,7 @@ func MapError(err error) error {
 		return domain.E(domain.KindConflict, domain.CodeDuplicateExternalRef, "a transaction with this external_ref already exists in the ledger")
 	case "transactions_reverses_id_key":
 		return domain.E(domain.KindConflict, domain.CodeAlreadyReversed, "transaction has already been reversed")
-	case "accounts_ledger_id_fkey", "transactions_ledger_id_fkey":
+	case "accounts_ledger_id_fkey", "transactions_ledger_id_fkey", "idempotency_keys_ledger_id_fkey", "api_keys_ledger_id_fkey":
 		return domain.E(domain.KindNotFound, domain.CodeNotFound, "ledger not found")
 	case "accounts_currency_fkey":
 		return domain.Invalid("unsupported currency")

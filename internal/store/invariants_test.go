@@ -36,10 +36,10 @@ func seed(t *testing.T) (ledgerID, a, b uuid.UUID, txn *domain.Transaction) {
 		return acc.ID
 	}
 	a, b = mk("a"), mk("b")
-	txn, err = svc.CreateTransaction(ctx, l.ID, domain.CreateTransactionRequest{Entries: []domain.EntryInput{
+	txn, _, err = svc.CreateTransaction(ctx, l.ID, domain.CreateTransactionRequest{Entries: []domain.EntryInput{
 		{AccountID: a, Direction: domain.Debit, Amount: 100, Currency: "USD"},
 		{AccountID: b, Direction: domain.Credit, Amount: 100, Currency: "USD"},
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

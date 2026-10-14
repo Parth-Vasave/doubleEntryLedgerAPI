@@ -57,7 +57,7 @@ func Connect(ctx context.Context, url string, maxConns int32, opts ...PoolOption
 // Migrate applies all pending goose migrations embedded in the binary.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	db := stdlib.OpenDBFromPool(pool)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	return migrateDB(ctx, db)
 }
 
@@ -97,7 +97,7 @@ func InTx(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) error 
 	for attempt := 0; attempt < MaxTxAttempts; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(1<<attempt) * 5 * time.Millisecond
-			jitter := time.Duration(rand.Int64N(int64(backoff)))
+			jitter := time.Duration(rand.Int64N(int64(backoff))) //nolint:gosec // retry jitter needs no CSPRNG
 			select {
 			case <-time.After(backoff/2 + jitter):
 			case <-ctx.Done():

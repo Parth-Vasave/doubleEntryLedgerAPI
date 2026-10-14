@@ -40,7 +40,8 @@ func Parse(s string) (Amount, error) {
 		return 0, errors.New("money: empty amount")
 	}
 	for i, c := range s {
-		if (c < '0' || c > '9') && !(i == 0 && c == '-') {
+		isDigit := c >= '0' && c <= '9'
+		if !isDigit && (i != 0 || c != '-') {
 			return 0, fmt.Errorf("money: invalid amount %q: must be an integer in minor units", s)
 		}
 	}

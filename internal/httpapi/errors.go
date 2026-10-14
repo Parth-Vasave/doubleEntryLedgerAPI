@@ -1,6 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/domain"
@@ -49,6 +53,22 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 func decodeBody(r *http.Request, dst any) error {
 	if err := decodeJSON(r, dst); err != nil {
 		return domain.Invalid("invalid JSON body: %v", err)
+	}
+	return nil
+}
+
+// decodeBytes strictly decodes an already-read JSON body.
+func decodeBytes(b []byte, dst any) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			return domain.Invalid("request body is empty")
+		}
+		return domain.Invalid("invalid JSON body: %v", err)
+	}
+	if dec.More() {
+		return domain.Invalid("request body must contain a single JSON object")
 	}
 	return nil
 }

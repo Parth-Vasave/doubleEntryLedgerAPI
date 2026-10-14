@@ -103,7 +103,7 @@ func ApplyWrite(ctx context.Context, db DBTX, w Write) error {
 	}
 
 	br := db.SendBatch(ctx, b)
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 
 	for _, t := range w.NewTxns {
 		if err := br.QueryRow().Scan(&t.CreatedAt); err != nil {

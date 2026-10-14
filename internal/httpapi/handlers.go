@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/auth"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/domain"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/store"
 )
@@ -51,7 +52,11 @@ func (s *Server) listLedgers(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	ls, err := s.svc.ListLedgers(r.Context(), nil, before, limit+1)
+	var only []uuid.UUID
+	if p := auth.FromContext(r.Context()); p != nil && !p.Admin && p.LedgerID != nil {
+		only = []uuid.UUID{*p.LedgerID}
+	}
+	ls, err := s.svc.ListLedgers(r.Context(), only, before, limit+1)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -230,17 +235,27 @@ func (s *Server) createTransaction(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	var req domain.CreateTransactionRequest
-	if err := decodeBody(r, &req); err != nil {
-		s.writeError(w, r, err)
-		return
-	}
-	t, err := s.svc.CreateTransaction(r.Context(), ledgerID, req)
+	body, err := readBody(r)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, t)
+	idem, err := idempotencyFrom(r, body)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var req domain.CreateTransactionRequest
+	if err := decodeBytes(body, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	t, replayed, err := s.svc.CreateTransaction(r.Context(), ledgerID, req, idem)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeIdempotent(w, http.StatusCreated, replayed, t)
 }
 
 func (s *Server) getTransaction(w http.ResponseWriter, r *http.Request) {
@@ -305,7 +320,3 @@ func (s *Server) transactionFromPath(w http.ResponseWriter, r *http.Request) (*d
 	}
 	return t, true
 }
-
-// authorizeLedger checks the caller may access ledgerID. Authentication is
-// added in a later milestone; until then every caller is allowed.
-func (s *Server) authorizeLedger(_ *http.Request, _ uuid.UUID) error { return nil }

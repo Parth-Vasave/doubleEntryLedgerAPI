@@ -8,8 +8,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/auth"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/httpapi"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/ledger"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/testutil"
@@ -25,8 +30,26 @@ type api struct {
 func newAPI(t *testing.T) *api {
 	t.Helper()
 	testutil.SkipIfShort(t)
+	return &api{t: t, h: testHandler(), headers: map[string]string{"Authorization": "Bearer " + adminKey}}
+}
+
+const adminKey = "test-admin-key"
+
+func testHandler() http.Handler {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return &api{t: t, h: httpapi.NewServer(log, testPool, ledger.NewService(testPool)).Handler(), headers: map[string]string{}}
+	return httpapi.NewServer(httpapi.Deps{
+		Log:    log,
+		Pool:   testPool,
+		Ledger: ledger.NewService(testPool),
+		Auth:   auth.New(testPool, adminKey, time.Minute),
+	}).Handler()
+}
+
+// as returns a copy of the client authenticating with a different token.
+func (a *api) as(token string) *api {
+	c := *a
+	c.headers = map[string]string{"Authorization": "Bearer " + token}
+	return &c
 }
 
 type resp struct {
@@ -51,7 +74,15 @@ func (a *api) do(method, path string, body any, hdr ...string) resp {
 	for k, v := range a.headers {
 		req.Header.Set(k, v)
 	}
+	// Money-moving requests require an Idempotency-Key; default to a fresh one.
+	if method == http.MethodPost && strings.Contains(path, "/transactions") {
+		req.Header.Set("Idempotency-Key", uuid.NewString())
+	}
 	for i := 0; i+1 < len(hdr); i += 2 {
+		if hdr[i+1] == "" {
+			req.Header.Del(hdr[i])
+			continue
+		}
 		req.Header.Set(hdr[i], hdr[i+1])
 	}
 	rec := httptest.NewRecorder()

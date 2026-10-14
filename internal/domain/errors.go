@@ -10,8 +10,8 @@ type Kind int
 
 // Error kinds.
 const (
-	KindInvalid      Kind = iota + 1 // malformed request
-	KindUnprocessable                // well-formed but violates a business rule
+	KindInvalid       Kind = iota + 1 // malformed request
+	KindUnprocessable                 // well-formed but violates a business rule
 	KindNotFound
 	KindConflict
 	KindUnauthorized

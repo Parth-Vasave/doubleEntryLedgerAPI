@@ -29,3 +29,6 @@ GEMINI.md
 
 # Load test output
 loadtest/results/
+
+# rapid property-test failure files
+testdata/rapid/

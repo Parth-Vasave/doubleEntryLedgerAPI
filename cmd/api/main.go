@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/auth"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/config"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/httpapi"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/ledger"
@@ -50,8 +51,13 @@ func run() error {
 	}
 
 	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewServer(log, pool, ledger.NewService(pool)).Handler(),
+		Addr: cfg.HTTPAddr,
+		Handler: httpapi.NewServer(httpapi.Deps{
+			Log:    log,
+			Pool:   pool,
+			Ledger: ledger.NewService(pool),
+			Auth:   auth.New(pool, cfg.AdminAPIKey, 30*time.Second),
+		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

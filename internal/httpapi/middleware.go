@@ -3,6 +3,7 @@ package httpapi
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -92,7 +93,7 @@ func recoverer(log *slog.Logger) Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if v := recover(); v != nil {
-					if v == http.ErrAbortHandler {
+					if err, ok := v.(error); ok && errors.Is(err, http.ErrAbortHandler) {
 						panic(v)
 					}
 					log.ErrorContext(r.Context(), "panic", "error", v, "stack", string(debug.Stack()),

@@ -24,34 +24,38 @@ import (
 //
 // The database re-checks balance (deferred trigger), currency/ledger matching
 // (composite FK) and overdraft (CHECK) on commit.
-func (s *Service) CreateTransaction(ctx context.Context, ledgerID uuid.UUID, req domain.CreateTransactionRequest) (*domain.Transaction, error) {
+func (s *Service) CreateTransaction(ctx context.Context, ledgerID uuid.UUID, req domain.CreateTransactionRequest, idem *Idempotency) (*domain.Transaction, bool, error) {
 	if err := req.Validate(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	var out *domain.Transaction
+	var (
+		out      *domain.Transaction
+		replayed bool
+	)
 	err := store.InTx(ctx, s.pool, func(tx pgx.Tx) error {
-		accts, err := lockAccounts(ctx, tx, ledgerID, entryAccountIDs(req.Entries))
-		if err != nil {
-			return err
-		}
-		t, touched, err := s.buildTransaction(ledgerID, &req, accts)
-		if err != nil {
-			return err
-		}
-		if err := store.ApplyWrite(ctx, tx, store.Write{
-			LedgerID: ledgerID,
-			NewTxns:  []*domain.Transaction{t},
-			Accounts: touched,
-		}); err != nil {
-			return err
-		}
-		out = t
-		return nil
+		var err error
+		out, replayed, err = idempotent(ctx, tx, ledgerID, idem, 201, func() (*domain.Transaction, error) {
+			accts, err := lockAccounts(ctx, tx, ledgerID, entryAccountIDs(req.Entries))
+			if err != nil {
+				return nil, err
+			}
+			t, touched, err := s.buildTransaction(ledgerID, &req, accts)
+			if err != nil {
+				return nil, err
+			}
+			err = store.ApplyWrite(ctx, tx, store.Write{
+				LedgerID: ledgerID,
+				NewTxns:  []*domain.Transaction{t},
+				Accounts: touched,
+			})
+			return t, err
+		})
+		return err
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return out, nil
+	return out, replayed, nil
 }
 
 // buildTransaction turns a validated request into a transaction whose entries
