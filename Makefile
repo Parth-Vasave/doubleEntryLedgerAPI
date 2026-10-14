@@ -3,7 +3,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 DATABASE_URL ?= postgres://ledger:ledger@localhost:55432/ledger?sslmode=disable
 ADMIN_API_KEY ?= dev-admin-key-change-me
 
-.PHONY: help build run test test-short lint fmt up down logs psql clean
+.PHONY: help build run test test-short lint fmt up down logs psql demo loadtest clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -37,6 +37,18 @@ logs: ## Tail stack logs
 
 psql: ## Open psql against the compose database
 	psql "$(DATABASE_URL)"
+
+demo: ## Run the end-to-end demo against the running stack
+	./scripts/demo.sh
+
+MODE ?= uniform
+VUS ?= 50
+DURATION ?= 30s
+loadtest: ## Run the k6 load test in Docker (MODE=uniform|hot VUS=50 DURATION=30s)
+	docker run --rm -i --network ledger_default \
+		-e API=http://api:8080 -e ADMIN_API_KEY=$(ADMIN_API_KEY) \
+		-e MODE=$(MODE) -e VUS=$(VUS) -e DURATION=$(DURATION) \
+		grafana/k6:0.54.0 run --quiet - < loadtest/k6/transfers.js
 
 clean: ## Remove build output
 	rm -rf bin

@@ -33,12 +33,17 @@ type Server struct {
 	svc  *ledger.Service
 	auth *auth.Authenticator
 	rl   *rateLimiter
+
+	routes []string // every registered pattern, for the API contract test
 }
 
 // NewServer builds a Server.
 func NewServer(d Deps) *Server {
 	return &Server{log: d.Log, pool: d.Pool, svc: d.Ledger, auth: d.Auth, rl: newRateLimiter(d.RateLimitRPS, d.RateLimitBurst)}
 }
+
+// Routes returns the registered "METHOD /path" patterns. Valid after Handler.
+func (s *Server) Routes() []string { return s.routes }
 
 // Handler returns the fully wired HTTP handler.
 func (s *Server) Handler() http.Handler {
@@ -47,6 +52,8 @@ func (s *Server) Handler() http.Handler {
 	s.handle(mux, "GET /healthz", accessPublic, s.healthz)
 	s.handle(mux, "GET /readyz", accessPublic, s.readyz)
 	mux.Handle("GET /metrics", promhttp.Handler())
+	s.handle(mux, "GET /openapi.yaml", accessPublic, s.openAPISpec)
+	s.handle(mux, "GET /docs", accessPublic, s.docs)
 
 	s.handle(mux, "POST /v1/api-keys", accessAdmin, s.createAPIKey)
 	s.handle(mux, "GET /v1/api-keys", accessAdmin, s.listAPIKeys)

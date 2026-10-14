@@ -26,6 +26,7 @@ const (
 
 // handle registers h on mux behind authentication and authorization.
 func (s *Server) handle(mux *http.ServeMux, pattern string, acc access, h http.HandlerFunc) {
+	s.routes = append(s.routes, pattern)
 	mux.Handle(pattern, s.authorize(acc, h))
 }
 

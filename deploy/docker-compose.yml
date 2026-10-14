@@ -29,6 +29,9 @@ services:
     environment:
       <<: *ledger-env
       DB_MAX_CONNS: "50"
+      # Generous for local load testing; the service default is 500 rps/key.
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-100000}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-100000}
     ports: ["8080:8080"]
     depends_on:
       postgres: { condition: service_healthy }

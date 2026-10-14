@@ -1,0 +1,5 @@
+extends: [recommended]
+rules:
+  info-license: off              # license is chosen by the repository owner
+  no-server-example.com: off
+  operation-4xx-response: off    # every /v1 operation declares 4XX; health and metrics have none

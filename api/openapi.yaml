@@ -1,0 +1,711 @@
+openapi: 3.1.0
+info:
+  title: Double-Entry Ledger API
+  version: 1.0.0
+  description: |
+    A double-entry accounting ledger. Every transaction is a set of debit and
+    credit entries that must balance per currency; history is append-only and
+    corrections are made with reversals.
+
+    **Amounts** are strings of integer minor units (`"1050"` = $10.50 for USD)
+    so that no client loses precision.
+
+    **Idempotency**: every request that moves money requires an
+    `Idempotency-Key` header. Retrying with the same key and body returns the
+    original response (with `Idempotent-Replayed: true`) without executing
+    twice; reusing a key with a different body fails with
+    `idempotency_key_reused`. Failed requests are not stored and can be retried.
+
+    **Errors** are RFC 7807 `application/problem+json` with a stable `code`.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+tags:
+  - name: Ledgers
+    description: Isolated books of accounts.
+  - name: Accounts
+    description: Single-currency accounts, balances and statements.
+  - name: Transactions
+    description: Balanced journal entries, holds, captures, voids, reversals and batches.
+  - name: Webhooks
+    description: Signed, at-least-once event delivery.
+  - name: API keys
+    description: Ledger-scoped credentials (admin only).
+  - name: Operations
+    description: Health checks and metrics.
+
+paths:
+  /v1/ledgers:
+    post:
+      tags: [Ledgers]
+      summary: Create a ledger (admin)
+      operationId: createLedger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateLedgerRequest' }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Ledger' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+    get:
+      tags: [Ledgers]
+      summary: List ledgers visible to the API key
+      operationId: listLedgers
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Cursor' }]
+      responses:
+        '200':
+          description: A page of ledgers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LedgerPage' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/ledgers/{ledger_id}:
+    parameters: [{ $ref: '#/components/parameters/LedgerID' }]
+    get:
+      tags: [Ledgers]
+      summary: Get a ledger
+      operationId: getLedger
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Ledger' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/ledgers/{ledger_id}/trial-balance:
+    parameters: [{ $ref: '#/components/parameters/LedgerID' }]
+    get:
+      tags: [Ledgers]
+      summary: Trial balance per currency
+      description: Total debits must equal total credits in every currency.
+      operationId: trialBalance
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TrialBalance' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/ledgers/{ledger_id}/accounts:
+    parameters: [{ $ref: '#/components/parameters/LedgerID' }]
+    post:
+      tags: [Accounts]
+      summary: Open an account
+      operationId: createAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAccountRequest' }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Account' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+    get:
+      tags: [Accounts]
+      summary: List accounts
+      operationId: listAccounts
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Cursor' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AccountPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/accounts/{account_id}:
+    parameters: [{ $ref: '#/components/parameters/AccountID' }]
+    get:
+      tags: [Accounts]
+      summary: Get an account with live balances
+      operationId: getAccount
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Account' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+    patch:
+      tags: [Accounts]
+      summary: Rename, freeze/unfreeze, or replace metadata
+      operationId: updateAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateAccountRequest' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Account' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/accounts/{account_id}/balance:
+    parameters: [{ $ref: '#/components/parameters/AccountID' }]
+    get:
+      tags: [Accounts]
+      summary: Live balances, or the posted balance at a point in time
+      operationId: getBalance
+      parameters:
+        - name: as_of
+          in: query
+          description: RFC 3339 timestamp. When set, returns the posted balance as of that instant.
+          schema: { type: string, format: date-time }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AccountBalance' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/accounts/{account_id}/entries:
+    parameters: [{ $ref: '#/components/parameters/AccountID' }]
+    get:
+      tags: [Accounts]
+      summary: Account statement (newest first)
+      operationId: listEntries
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/EntryPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/ledgers/{ledger_id}/transactions:
+    parameters: [{ $ref: '#/components/parameters/LedgerID' }]
+    post:
+      tags: [Transactions]
+      summary: Post a transaction (or create a pending hold)
+      operationId: createTransaction
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTransactionRequest' }
+            examples:
+              p2p:
+                summary: Payment with a fee (3 legs)
+                value:
+                  description: Alice pays Bob
+                  entries:
+                    - { account_id: 0190a0a0-0000-7000-8000-000000000001, direction: DEBIT, amount: '2600', currency: USD }
+                    - { account_id: 0190a0a0-0000-7000-8000-000000000002, direction: CREDIT, amount: '2500', currency: USD }
+                    - { account_id: 0190a0a0-0000-7000-8000-000000000003, direction: CREDIT, amount: '100', currency: USD }
+      responses:
+        '201': { $ref: '#/components/responses/Transaction' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+    get:
+      tags: [Transactions]
+      summary: List transactions (newest first)
+      operationId: listTransactions
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/TransactionStatus' } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TransactionPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/ledgers/{ledger_id}/transactions/batch:
+    parameters: [{ $ref: '#/components/parameters/LedgerID' }]
+    post:
+      tags: [Transactions]
+      summary: Post up to 100 transactions atomically (all or none)
+      operationId: createBatch
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transactions]
+              additionalProperties: false
+              properties:
+                transactions:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { $ref: '#/components/schemas/CreateTransactionRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactions: { type: array, items: { $ref: '#/components/schemas/Transaction' } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/transactions/{transaction_id}:
+    parameters: [{ $ref: '#/components/parameters/TransactionID' }]
+    get:
+      tags: [Transactions]
+      summary: Get a transaction with its entries
+      operationId: getTransaction
+      responses:
+        '200': { $ref: '#/components/responses/Transaction' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/transactions/{transaction_id}/post:
+    parameters: [{ $ref: '#/components/parameters/TransactionID' }]
+    post:
+      tags: [Transactions]
+      summary: Capture a pending transaction (fully, or partially)
+      description: |
+        With an empty body the full held amounts are posted. To capture
+        partially, send balanced entries matching the held legs with amounts
+        no greater than held; the remainder is released.
+      operationId: postPending
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                entries: { type: array, items: { $ref: '#/components/schemas/EntryInput' } }
+      responses:
+        '200': { $ref: '#/components/responses/Transaction' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/transactions/{transaction_id}/void:
+    parameters: [{ $ref: '#/components/parameters/TransactionID' }]
+    post:
+      tags: [Transactions]
+      summary: Void a pending transaction, releasing its holds
+      operationId: voidPending
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200': { $ref: '#/components/responses/Transaction' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/transactions/{transaction_id}/reverse:
+    parameters: [{ $ref: '#/components/parameters/TransactionID' }]
+    post:
+      tags: [Transactions]
+      summary: Reverse a posted transaction (at most once)
+      operationId: reverseTransaction
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                description: { type: string, maxLength: 1000 }
+                metadata: { $ref: '#/components/schemas/Metadata' }
+      responses:
+        '201': { $ref: '#/components/responses/Transaction' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/ledgers/{ledger_id}/webhooks:
+    parameters: [{ $ref: '#/components/parameters/LedgerID' }]
+    post:
+      tags: [Webhooks]
+      summary: Subscribe a URL to ledger events
+      description: |
+        Deliveries are POSTed with a `Ledger-Signature: t=<unix>,v1=<hex>`
+        header, where v1 is HMAC-SHA256(secret, "<unix>." + body). Delivery is
+        at-least-once; deduplicate on `Ledger-Event-Id`.
+      operationId: createWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              additionalProperties: false
+              properties:
+                url: { type: string, format: uri }
+                event_types:
+                  type: array
+                  description: Defaults to all event types.
+                  items: { $ref: '#/components/schemas/EventType' }
+      responses:
+        '201': { description: 'Created; includes the signing secret, shown only once', content: { application/json: { schema: { $ref: '#/components/schemas/Webhook' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+    get:
+      tags: [Webhooks]
+      summary: List webhooks
+      operationId: listWebhooks
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Webhook' } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/ledgers/{ledger_id}/webhooks/{webhook_id}:
+    parameters:
+      - { $ref: '#/components/parameters/LedgerID' }
+      - { name: webhook_id, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      tags: [Webhooks]
+      summary: Deactivate a webhook
+      operationId: deleteWebhook
+      responses:
+        '204': { description: Deactivated }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/api-keys:
+    post:
+      tags: [API keys]
+      summary: Mint an API key (admin)
+      operationId: createAPIKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scopes]
+              additionalProperties: false
+              properties:
+                name: { type: string }
+                ledger_id: { type: string, format: uuid, description: Restrict the key to one ledger. }
+                scopes: { type: array, items: { type: string, enum: [read, write] } }
+      responses:
+        '201': { description: 'Created; includes the secret, shown only once', content: { application/json: { schema: { $ref: '#/components/schemas/APIKey' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+    get:
+      tags: [API keys]
+      summary: List API keys (admin)
+      operationId: listAPIKeys
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/APIKey' } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /v1/api-keys/{key_id}:
+    parameters: [{ name: key_id, in: path, required: true, schema: { type: string, format: uuid } }]
+    delete:
+      tags: [API keys]
+      summary: Revoke an API key (admin)
+      operationId: revokeAPIKey
+      responses:
+        '204': { description: Revoked }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+  /healthz:
+    get:
+      tags: [Operations]
+      summary: Liveness
+      operationId: healthz
+      security: []
+      responses: { '200': { description: OK } }
+  /readyz:
+    get:
+      tags: [Operations]
+      summary: Readiness (database reachable)
+      operationId: readyz
+      security: []
+      responses: { '200': { description: Ready }, '503': { description: Not ready } }
+  /metrics:
+    get:
+      tags: [Operations]
+      summary: Prometheus metrics
+      operationId: metrics
+      security: []
+      responses: { '200': { description: Prometheus text format } }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: An API key (`lk_...`) or the admin key.
+
+  parameters:
+    LedgerID: { name: ledger_id, in: path, required: true, schema: { type: string, format: uuid } }
+    AccountID: { name: account_id, in: path, required: true, schema: { type: string, format: uuid } }
+    TransactionID: { name: transaction_id, in: path, required: true, schema: { type: string, format: uuid } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    Cursor: { name: cursor, in: query, description: Opaque cursor from a previous page's next_cursor., schema: { type: string } }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Unique per logical request (e.g. a UUID), at most 255 characters. Keys expire after 24 hours.
+      schema: { type: string, maxLength: 255 }
+
+  responses:
+    Transaction:
+      description: The transaction
+      headers:
+        Idempotent-Replayed:
+          description: Present and "true" when the response was replayed from a previous request with the same key.
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Transaction' }
+    Problem:
+      description: Error
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    Amount:
+      type: string
+      pattern: '^-?[0-9]+$'
+      description: Integer amount in the currency's minor unit, as a string.
+      examples: ['1050']
+    Currency: { type: string, pattern: '^[A-Z][A-Z0-9]{2,9}$', examples: [USD] }
+    Metadata:
+      type: object
+      maxProperties: 50
+      additionalProperties: { type: string, maxLength: 500 }
+    Direction: { type: string, enum: [DEBIT, CREDIT] }
+    AccountType: { type: string, enum: [ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE] }
+    TransactionStatus: { type: string, enum: [PENDING, POSTED, VOIDED] }
+    EventType: { type: string, enum: [transaction.posted, transaction.pending, transaction.voided, transaction.reversed] }
+
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        code:
+          type: string
+          enum:
+            - validation_error
+            - unbalanced_transaction
+            - currency_mismatch
+            - insufficient_funds
+            - account_frozen
+            - not_found
+            - duplicate_account_code
+            - duplicate_external_ref
+            - invalid_state
+            - already_reversed
+            - idempotency_key_reused
+            - idempotency_key_required
+            - version_conflict
+            - amount_overflow
+            - unauthorized
+            - forbidden
+            - rate_limited
+            - internal_error
+        detail: { type: string }
+        instance: { type: string }
+        request_id: { type: string }
+
+    CreateLedgerRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 200 }
+        metadata: { $ref: '#/components/schemas/Metadata' }
+    Ledger:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        metadata: { $ref: '#/components/schemas/Metadata' }
+        created_at: { type: string, format: date-time }
+    LedgerPage:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Ledger' } }
+        next_cursor: { type: string }
+
+    CreateAccountRequest:
+      type: object
+      required: [code, name, type, currency]
+      additionalProperties: false
+      properties:
+        code: { type: string, description: 'Unique per ledger, e.g. "liabilities:wallet:alice".' }
+        name: { type: string }
+        type: { $ref: '#/components/schemas/AccountType' }
+        currency: { $ref: '#/components/schemas/Currency' }
+        allow_negative: { type: boolean, default: false, description: Allow the available balance to go below zero (e.g. external or settlement accounts). }
+        metadata: { $ref: '#/components/schemas/Metadata' }
+    UpdateAccountRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        status: { type: string, enum: [ACTIVE, FROZEN] }
+        metadata: { $ref: '#/components/schemas/Metadata' }
+    Balances:
+      type: object
+      description: Signed on the account's normal side.
+      properties:
+        posted: { $ref: '#/components/schemas/Amount' }
+        pending: { $ref: '#/components/schemas/Amount' }
+        available: { $ref: '#/components/schemas/Amount' }
+        posted_debits: { $ref: '#/components/schemas/Amount' }
+        posted_credits: { $ref: '#/components/schemas/Amount' }
+        pending_debits: { $ref: '#/components/schemas/Amount' }
+        pending_credits: { $ref: '#/components/schemas/Amount' }
+    Account:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        ledger_id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        type: { $ref: '#/components/schemas/AccountType' }
+        normal_balance: { $ref: '#/components/schemas/Direction' }
+        currency: { $ref: '#/components/schemas/Currency' }
+        allow_negative: { type: boolean }
+        status: { type: string, enum: [ACTIVE, FROZEN] }
+        version: { type: integer, description: Increments with every entry; use with expected_versions. }
+        balances: { $ref: '#/components/schemas/Balances' }
+        metadata: { $ref: '#/components/schemas/Metadata' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AccountPage:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Account' } }
+        next_cursor: { type: string }
+    AccountBalance:
+      type: object
+      properties:
+        account_id: { type: string, format: uuid }
+        currency: { $ref: '#/components/schemas/Currency' }
+        version: { type: integer }
+        as_of: { type: string, format: date-time }
+        balances: { $ref: '#/components/schemas/Balances' }
+        posted: { $ref: '#/components/schemas/Amount' }
+
+    EntryInput:
+      type: object
+      required: [account_id, direction, amount, currency]
+      additionalProperties: false
+      properties:
+        account_id: { type: string, format: uuid }
+        direction: { $ref: '#/components/schemas/Direction' }
+        amount: { $ref: '#/components/schemas/Amount' }
+        currency: { $ref: '#/components/schemas/Currency' }
+    CreateTransactionRequest:
+      type: object
+      required: [entries]
+      additionalProperties: false
+      properties:
+        description: { type: string, maxLength: 1000 }
+        external_ref: { type: string, maxLength: 200, description: Unique per ledger when set. }
+        effective_at: { type: string, format: date-time }
+        metadata: { $ref: '#/components/schemas/Metadata' }
+        entries:
+          type: array
+          minItems: 2
+          maxItems: 100
+          description: Debits must equal credits in each currency.
+          items: { $ref: '#/components/schemas/EntryInput' }
+        pending: { type: boolean, description: Create a hold instead of posting immediately. }
+        expires_at: { type: string, format: date-time, description: Auto-void time for a pending transaction. }
+        expected_versions:
+          type: object
+          description: Optimistic concurrency, mapping account id to the expected account version.
+          additionalProperties: { type: integer }
+    Entry:
+      type: object
+      properties:
+        id: { type: integer }
+        transaction_id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        direction: { $ref: '#/components/schemas/Direction' }
+        amount: { $ref: '#/components/schemas/Amount' }
+        currency: { $ref: '#/components/schemas/Currency' }
+        pending: { type: boolean }
+        account_version: { type: integer }
+        balance_after: { $ref: '#/components/schemas/Amount' }
+        created_at: { type: string, format: date-time }
+    EntryPage:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Entry' } }
+        next_cursor: { type: string }
+    Transaction:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        ledger_id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/TransactionStatus' }
+        description: { type: string }
+        external_ref: { type: string }
+        effective_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        posted_at: { type: string, format: date-time }
+        voided_at: { type: string, format: date-time }
+        reverses_id: { type: string, format: uuid }
+        reversed_by_id: { type: string, format: uuid }
+        metadata: { $ref: '#/components/schemas/Metadata' }
+        created_at: { type: string, format: date-time }
+        entries: { type: array, items: { $ref: '#/components/schemas/Entry' } }
+    TransactionPage:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Transaction' } }
+        next_cursor: { type: string }
+
+    TrialBalance:
+      type: object
+      properties:
+        ledger_id: { type: string, format: uuid }
+        balanced: { type: boolean }
+        currencies:
+          type: array
+          items:
+            type: object
+            properties:
+              currency: { $ref: '#/components/schemas/Currency' }
+              accounts: { type: integer }
+              total_debits: { type: string }
+              total_credits: { type: string }
+              debit_balances: { type: string }
+              credit_balances: { type: string }
+              balanced: { type: boolean }
+
+    Webhook:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        ledger_id: { type: string, format: uuid }
+        url: { type: string }
+        event_types: { type: array, items: { $ref: '#/components/schemas/EventType' } }
+        active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        secret: { type: string, description: Only returned on creation. }
+    APIKey:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        prefix: { type: string }
+        ledger_id: { type: string, format: uuid }
+        scopes: { type: array, items: { type: string, enum: [read, write] } }
+        created_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+        secret: { type: string, description: Only returned on creation. }
