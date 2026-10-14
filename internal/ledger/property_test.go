@@ -3,6 +3,8 @@ package ledger_test
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -46,10 +48,15 @@ type model struct {
 	ledgerID uuid.UUID
 	accounts []*modelAccount
 	byID     map[uuid.UUID]*modelAccount
+	pending  map[uuid.UUID][]domain.EntryInput // outstanding holds
+	posted   map[uuid.UUID][]domain.EntryInput // reversible transactions
 }
 
 func newModel(t *rapid.T, svc *ledger.Service) *model {
-	m := &model{svc: svc, ledgerID: newLedger(t, svc), byID: map[uuid.UUID]*modelAccount{}}
+	m := &model{
+		svc: svc, ledgerID: newLedger(t, svc), byID: map[uuid.UUID]*modelAccount{},
+		pending: map[uuid.UUID][]domain.EntryInput{}, posted: map[uuid.UUID][]domain.EntryInput{},
+	}
 	types := []domain.AccountType{domain.Asset, domain.Liability, domain.Equity, domain.Revenue, domain.Expense}
 	n := rapid.IntRange(3, 7).Draw(t, "accounts")
 	for i := range n {
@@ -119,6 +126,31 @@ func (m *model) predict(entries []domain.EntryInput, pending bool) (map[uuid.UUI
 	return next, true
 }
 
+// release removes the holds of a pending transaction from the model.
+func (m *model) release(entries []domain.EntryInput) {
+	for _, e := range entries {
+		a := m.byID[e.AccountID]
+		if e.Direction == domain.Debit {
+			a.holdDebits -= int64(e.Amount)
+		} else {
+			a.holdCredits -= int64(e.Amount)
+		}
+	}
+}
+
+// pick draws one id from a set, in a deterministic order.
+func pick(t *rapid.T, set map[uuid.UUID][]domain.EntryInput, label string) (uuid.UUID, bool) {
+	if len(set) == 0 {
+		return uuid.Nil, false
+	}
+	ids := make([]uuid.UUID, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	slices.SortFunc(ids, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+	return rapid.SampledFrom(ids).Draw(t, label), true
+}
+
 func (m *model) commit(next map[uuid.UUID]modelAccount) {
 	for id, a := range next {
 		*m.byID[id] = a
@@ -153,19 +185,81 @@ func TestLedgerProperties(t *testing.T) {
 
 	rapid.Check(t, func(t *rapid.T) {
 		m := newModel(t, svc)
+		// create posts entries (as a hold if pending) and checks the ledger
+		// accepts or rejects exactly when the model predicts.
+		create := func(t *rapid.T, entries []domain.EntryInput, pending bool, reverses *uuid.UUID) {
+			next, accept := m.predict(entries, pending)
+			var (
+				tx  *domain.Transaction
+				err error
+			)
+			if reverses != nil {
+				tx, _, err = svc.Reverse(ctx, m.ledgerID, *reverses, domain.ReverseRequest{}, nil)
+			} else {
+				tx, _, err = svc.CreateTransaction(ctx, m.ledgerID, domain.CreateTransactionRequest{Entries: entries, Pending: pending}, nil)
+			}
+			switch {
+			case accept && err != nil:
+				t.Fatalf("model accepted but ledger rejected: %v", err)
+			case !accept && !domain.IsCode(err, domain.CodeInsufficientFunds):
+				t.Fatalf("model predicted insufficient funds, ledger returned %v", err)
+			case !accept:
+				return
+			}
+			m.commit(next)
+			switch {
+			case reverses != nil:
+				delete(m.posted, *reverses)
+			case pending:
+				m.pending[tx.ID] = entries
+			default:
+				m.posted[tx.ID] = entries
+			}
+		}
+
 		t.Repeat(map[string]func(*rapid.T){
-			"transfer": func(t *rapid.T) {
-				entries := m.drawEntries(t)
-				next, accept := m.predict(entries, false)
-				_, _, err := svc.CreateTransaction(ctx, m.ledgerID, domain.CreateTransactionRequest{Entries: entries}, nil)
-				switch {
-				case accept && err != nil:
-					t.Fatalf("model accepted but ledger rejected: %v", err)
-				case !accept && !domain.IsCode(err, domain.CodeInsufficientFunds):
-					t.Fatalf("model predicted insufficient funds, ledger returned %v", err)
-				case accept:
-					m.commit(next)
+			"transfer": func(t *rapid.T) { create(t, m.drawEntries(t), false, nil) },
+			"hold":     func(t *rapid.T) { create(t, m.drawEntries(t), true, nil) },
+			"post hold": func(t *rapid.T) {
+				id, ok := pick(t, m.pending, "pending")
+				if !ok {
+					t.Skip("no pending transactions")
 				}
+				if _, _, err := svc.PostPending(ctx, m.ledgerID, id, domain.PostPendingRequest{}, nil); err != nil {
+					t.Fatalf("post pending: %v", err)
+				}
+				entries := m.pending[id]
+				m.release(entries)
+				next, ok := m.predict(entries, false)
+				if !ok {
+					t.Fatalf("model: capturing a hold must never overdraw")
+				}
+				m.commit(next)
+				delete(m.pending, id)
+				m.posted[id] = entries
+			},
+			"void hold": func(t *rapid.T) {
+				id, ok := pick(t, m.pending, "pending")
+				if !ok {
+					t.Skip("no pending transactions")
+				}
+				if _, _, err := svc.VoidPending(ctx, m.ledgerID, id, nil); err != nil {
+					t.Fatalf("void pending: %v", err)
+				}
+				m.release(m.pending[id])
+				delete(m.pending, id)
+			},
+			"reverse": func(t *rapid.T) {
+				id, ok := pick(t, m.posted, "posted")
+				if !ok {
+					t.Skip("no posted transactions")
+				}
+				var inverse []domain.EntryInput
+				for _, e := range m.posted[id] {
+					e.Direction = e.Direction.Opposite()
+					inverse = append(inverse, e)
+				}
+				create(t, inverse, false, &id)
 			},
 			"": func(t *rapid.T) { m.check(t) },
 		})

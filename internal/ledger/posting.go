@@ -78,13 +78,23 @@ func (s *Service) buildTransaction(ledgerID uuid.UUID, req *domain.CreateTransac
 		PostedAt:    &now,
 		Metadata:    req.Metadata,
 	}
+	if req.Pending {
+		t.Status, t.PostedAt = domain.TxnPending, nil
+		if req.ExpiresAt != nil {
+			if !req.ExpiresAt.After(now) {
+				return nil, nil, domain.Invalid("expires_at must be in the future")
+			}
+			exp := req.ExpiresAt.UTC()
+			t.ExpiresAt = &exp
+		}
+	}
 	if req.EffectiveAt != nil {
 		t.EffectiveAt = req.EffectiveAt.UTC()
 	}
 	if t.Metadata == nil {
 		t.Metadata = domain.Metadata{}
 	}
-	touched, err := applyEntries(t, req.Entries, accts, false)
+	touched, err := applyEntries(t, req.Entries, accts, req.Pending)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -166,6 +176,12 @@ func entryAccountIDs(entries []domain.EntryInput) []uuid.UUID {
 	for _, e := range entries {
 		ids = append(ids, e.AccountID)
 	}
+	return sortedUnique(ids)
+}
+
+// sortedUnique sorts ids (in place) and removes duplicates: the canonical
+// lock order.
+func sortedUnique(ids []uuid.UUID) []uuid.UUID {
 	slices.SortFunc(ids, compareUUID)
 	return slices.Compact(ids)
 }

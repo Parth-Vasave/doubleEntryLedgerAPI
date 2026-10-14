@@ -108,6 +108,11 @@ type CreateTransactionRequest struct {
 	EffectiveAt *time.Time   `json:"effective_at,omitempty"`
 	Metadata    Metadata     `json:"metadata,omitempty"`
 	Entries     []EntryInput `json:"entries"`
+	// Pending creates a two-phase transfer: funds are reserved (held) and only
+	// move when the transaction is later posted, or are released if voided.
+	Pending bool `json:"pending,omitempty"`
+	// ExpiresAt auto-voids a pending transaction that is not posted in time.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// ExpectedVersions optionally pins account versions for optimistic
 	// concurrency: the transaction fails with version_conflict if any listed
 	// account has moved on since the client read it.
@@ -124,6 +129,9 @@ func (r *CreateTransactionRequest) Validate() error {
 	}
 	if err := validateMetadata(r.Metadata); err != nil {
 		return err
+	}
+	if r.ExpiresAt != nil && !r.Pending {
+		return Invalid("expires_at is only valid for pending transactions")
 	}
 	for id := range r.ExpectedVersions {
 		if !slices.ContainsFunc(r.Entries, func(e EntryInput) bool { return e.AccountID == id }) {
@@ -194,4 +202,47 @@ func validateMetadata(m Metadata) error {
 		}
 	}
 	return nil
+}
+
+// MaxBatchSize bounds the number of transactions in one atomic batch.
+const MaxBatchSize = 100
+
+// BatchRequest posts several transactions atomically: all or none.
+type BatchRequest struct {
+	Transactions []CreateTransactionRequest `json:"transactions"`
+}
+
+// Validate checks every transaction in the batch.
+func (r *BatchRequest) Validate() error {
+	if len(r.Transactions) == 0 || len(r.Transactions) > MaxBatchSize {
+		return Invalid("a batch must contain 1-%d transactions", MaxBatchSize)
+	}
+	for i := range r.Transactions {
+		if err := r.Transactions[i].Validate(); err != nil {
+			return Prefix(err, "transactions[%d]: ", i)
+		}
+	}
+	return nil
+}
+
+// PostPendingRequest captures a pending transaction. With no entries the full
+// held amounts are posted. Otherwise entries must be a balanced subset of the
+// held legs (same account, direction and currency) with amounts no greater
+// than held: a partial capture. Anything not captured is released.
+type PostPendingRequest struct {
+	Entries []EntryInput `json:"entries,omitempty"`
+}
+
+// ReverseRequest describes a reversal.
+type ReverseRequest struct {
+	Description string   `json:"description,omitempty"`
+	Metadata    Metadata `json:"metadata,omitempty"`
+}
+
+// Validate checks the request.
+func (r *ReverseRequest) Validate() error {
+	if len(r.Description) > 1000 {
+		return Invalid("description must be at most 1000 characters")
+	}
+	return validateMetadata(r.Metadata)
 }

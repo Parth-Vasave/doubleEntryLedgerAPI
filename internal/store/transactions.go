@@ -260,3 +260,15 @@ func PostedBalanceAt(ctx context.Context, db DBTX, accountID uuid.UUID, t time.T
 	}
 	return balance, version, err
 }
+
+// ClaimExpiredPending locks one expired PENDING transaction, skipping rows
+// already locked by other workers. It returns ErrNotFound when none is due.
+func ClaimExpiredPending(ctx context.Context, db DBTX, now time.Time) (id, ledgerID uuid.UUID, err error) {
+	err = db.QueryRow(ctx, `
+		SELECT id, ledger_id FROM transactions
+		 WHERE status = 'PENDING' AND expires_at <= $1
+		 ORDER BY expires_at
+		 LIMIT 1
+		 FOR UPDATE SKIP LOCKED`, now).Scan(&id, &ledgerID)
+	return id, ledgerID, MapError(err)
+}

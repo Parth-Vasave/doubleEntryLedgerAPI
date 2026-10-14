@@ -74,3 +74,12 @@ func IsCode(err error, code string) bool {
 	de, ok := AsError(err)
 	return ok && de.Code == code
 }
+
+// Prefix returns err with its message prefixed, preserving kind and code.
+func Prefix(err error, format string, args ...any) error {
+	de, ok := AsError(err)
+	if !ok {
+		return fmt.Errorf(format+"%w", append(args, err)...)
+	}
+	return &Error{Kind: de.Kind, Code: de.Code, Message: fmt.Sprintf(format, args...) + de.Message}
+}

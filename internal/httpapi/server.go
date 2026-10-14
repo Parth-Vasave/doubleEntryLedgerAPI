@@ -60,6 +60,10 @@ func (s *Server) Handler() http.Handler {
 	s.handle(mux, "POST /v1/ledgers/{ledger_id}/transactions", accessWrite, s.createTransaction)
 	s.handle(mux, "GET /v1/ledgers/{ledger_id}/transactions", accessRead, s.listTransactions)
 	s.handle(mux, "GET /v1/transactions/{transaction_id}", accessRead, s.getTransaction)
+	s.handle(mux, "POST /v1/ledgers/{ledger_id}/transactions/batch", accessWrite, s.createBatch)
+	s.handle(mux, "POST /v1/transactions/{transaction_id}/post", accessWrite, s.postTransaction)
+	s.handle(mux, "POST /v1/transactions/{transaction_id}/void", accessWrite, s.voidTransaction)
+	s.handle(mux, "POST /v1/transactions/{transaction_id}/reverse", accessWrite, s.reverseTransaction)
 
 	return chain(mux,
 		requestID,
