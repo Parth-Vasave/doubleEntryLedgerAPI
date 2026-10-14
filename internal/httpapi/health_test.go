@@ -13,7 +13,7 @@ import (
 
 func TestHealthEndpoints(t *testing.T) {
 	testutil.SkipIfShort(t)
-	h := httpapi.NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)), testPool).Handler()
+	h := httpapi.NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)), testPool, nil).Handler()
 
 	for _, path := range []string{"/healthz", "/readyz"} {
 		rec := httptest.NewRecorder()

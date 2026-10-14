@@ -13,6 +13,7 @@ import (
 
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/config"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/httpapi"
+	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/ledger"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/observability"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/store"
 )
@@ -50,7 +51,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewServer(log, pool).Handler(),
+		Handler:           httpapi.NewServer(log, pool, ledger.NewService(pool)).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
