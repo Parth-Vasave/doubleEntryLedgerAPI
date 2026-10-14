@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/auth"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/ledger"
@@ -19,6 +20,10 @@ type Deps struct {
 	Pool   *pgxpool.Pool
 	Ledger *ledger.Service
 	Auth   *auth.Authenticator
+	// RateLimitRPS and RateLimitBurst configure the per-key token bucket;
+	// a zero RPS disables rate limiting.
+	RateLimitRPS   float64
+	RateLimitBurst int
 }
 
 // Server holds the dependencies of the HTTP handlers.
@@ -27,11 +32,12 @@ type Server struct {
 	pool *pgxpool.Pool
 	svc  *ledger.Service
 	auth *auth.Authenticator
+	rl   *rateLimiter
 }
 
 // NewServer builds a Server.
 func NewServer(d Deps) *Server {
-	return &Server{log: d.Log, pool: d.Pool, svc: d.Ledger, auth: d.Auth}
+	return &Server{log: d.Log, pool: d.Pool, svc: d.Ledger, auth: d.Auth, rl: newRateLimiter(d.RateLimitRPS, d.RateLimitBurst)}
 }
 
 // Handler returns the fully wired HTTP handler.
@@ -40,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 
 	s.handle(mux, "GET /healthz", accessPublic, s.healthz)
 	s.handle(mux, "GET /readyz", accessPublic, s.readyz)
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	s.handle(mux, "POST /v1/api-keys", accessAdmin, s.createAPIKey)
 	s.handle(mux, "GET /v1/api-keys", accessAdmin, s.listAPIKeys)
@@ -65,7 +72,12 @@ func (s *Server) Handler() http.Handler {
 	s.handle(mux, "POST /v1/transactions/{transaction_id}/void", accessWrite, s.voidTransaction)
 	s.handle(mux, "POST /v1/transactions/{transaction_id}/reverse", accessWrite, s.reverseTransaction)
 
+	s.handle(mux, "POST /v1/ledgers/{ledger_id}/webhooks", accessWrite, s.createWebhook)
+	s.handle(mux, "GET /v1/ledgers/{ledger_id}/webhooks", accessRead, s.listWebhooks)
+	s.handle(mux, "DELETE /v1/ledgers/{ledger_id}/webhooks/{webhook_id}", accessWrite, s.deleteWebhook)
+
 	return chain(mux,
+		tracing,
 		requestID,
 		accessLog(s.log),
 		recoverer(s.log),

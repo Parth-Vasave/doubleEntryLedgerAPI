@@ -7,7 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/observability"
 )
@@ -46,6 +50,13 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
+// tracing starts an OpenTelemetry server span per request (a no-op unless a
+// tracer provider is configured) and propagates W3C trace context.
+func tracing(next http.Handler) http.Handler {
+	return otelhttp.NewHandler(next, "http.request",
+		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/metrics" }))
+}
+
 // requestID propagates X-Request-ID or generates a new one.
 func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +81,15 @@ func accessLog(log *slog.Logger) Middleware {
 			if rec.status == 0 {
 				rec.status = http.StatusOK
 			}
+			route := r.Pattern
+			if route == "" {
+				route = "unmatched"
+			}
+			observability.HTTPRequests.WithLabelValues(route, strconv.Itoa(rec.status)).Inc()
+			observability.HTTPDuration.WithLabelValues(route).Observe(time.Since(start).Seconds())
+			if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
+				span.SetName(route)
+			}
 			level := slog.LevelInfo
 			if rec.status >= 500 {
 				level = slog.LevelError
@@ -80,7 +100,7 @@ func accessLog(log *slog.Logger) Middleware {
 				slog.String("route", r.Pattern),
 				slog.Int("status", rec.status),
 				slog.Int("bytes", rec.bytes),
-				slog.Duration("duration", time.Since(start)),
+				slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
 				slog.String("request_id", observability.RequestID(r.Context())),
 			)
 		})

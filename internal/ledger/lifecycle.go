@@ -9,6 +9,7 @@ import (
 
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/domain"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/money"
+	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/observability"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/store"
 )
 
@@ -30,7 +31,7 @@ func (s *Service) PostPending(ctx context.Context, ledgerID, txnID uuid.UUID, re
 			return nil, false, err
 		}
 	}
-	return s.settle(ctx, ledgerID, txnID, idem, func(t *domain.Transaction, accts map[uuid.UUID]*domain.Account) ([]*domain.Entry, error) {
+	return recordSettled("captured")(s.settle(ctx, ledgerID, txnID, idem, func(t *domain.Transaction, accts map[uuid.UUID]*domain.Account) ([]*domain.Entry, error) {
 		held := map[legKey]money.Amount{}
 		for _, e := range t.Entries {
 			k := legKey{e.AccountID, e.Direction, e.Currency}
@@ -72,12 +73,27 @@ func (s *Service) PostPending(ctx context.Context, ledgerID, txnID uuid.UUID, re
 			out[i] = &posted.Entries[i]
 		}
 		return out, nil
-	}, domain.TxnPosted)
+	}, domain.TxnPosted))
+}
+
+// recordSettled returns a pass-through for a settle result that updates
+// metrics on success.
+func recordSettled(kind string) func(*domain.Transaction, bool, error) (*domain.Transaction, bool, error) {
+	return func(t *domain.Transaction, replayed bool, err error) (*domain.Transaction, bool, error) {
+		if err == nil {
+			recordCommitted(replayed, kind)
+		}
+		return t, replayed, err
+	}
 }
 
 // VoidPending cancels a pending transaction, releasing all of its holds.
 func (s *Service) VoidPending(ctx context.Context, ledgerID, txnID uuid.UUID, idem *Idempotency) (*domain.Transaction, bool, error) {
-	return s.settle(ctx, ledgerID, txnID, idem, voidHolds, domain.TxnVoided)
+	t, replayed, err := s.settle(ctx, ledgerID, txnID, idem, voidHolds, domain.TxnVoided)
+	if err == nil {
+		recordCommitted(replayed, "voided")
+	}
+	return t, replayed, err
 }
 
 func voidHolds(t *domain.Transaction, accts map[uuid.UUID]*domain.Account) ([]*domain.Entry, error) {
@@ -153,7 +169,11 @@ func (s *Service) settleTx(ctx context.Context, tx pgx.Tx, ledgerID, txnID uuid.
 	}); err != nil {
 		return nil, err
 	}
-	return store.GetTransaction(ctx, tx, t.ID)
+	t, err = store.GetTransaction(ctx, tx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	return t, store.InsertEvents(ctx, tx, []store.Event{txnEvent(t)})
 }
 
 // Reverse posts a new transaction that exactly undoes a POSTED transaction's
@@ -210,10 +230,16 @@ func (s *Service) Reverse(ctx context.Context, ledgerID, txnID uuid.UUID, req do
 			}
 			t.ReversesID = &orig.ID
 			err = store.ApplyWrite(ctx, tx, store.Write{LedgerID: ledgerID, NewTxns: []*domain.Transaction{t}, Accounts: touched})
-			return t, err
+			if err != nil {
+				return nil, err
+			}
+			return t, store.InsertEvents(ctx, tx, []store.Event{txnEvent(t)})
 		})
 		return err
 	})
+	if err == nil {
+		recordCommitted(replayed, "reversed")
+	}
 	return out, replayed, err
 }
 
@@ -267,10 +293,26 @@ func (s *Service) CreateBatch(ctx context.Context, ledgerID uuid.UUID, req domai
 			for _, id := range sortedUnique(tids) {
 				write.Accounts = append(write.Accounts, touched[id])
 			}
-			return res, store.ApplyWrite(ctx, tx, write)
+			if err := store.ApplyWrite(ctx, tx, write); err != nil {
+				return nil, err
+			}
+			events := make([]store.Event, len(res.Transactions))
+			for i, t := range res.Transactions {
+				events[i] = txnEvent(t)
+			}
+			return res, store.InsertEvents(ctx, tx, events)
 		})
 		return err
 	})
+	if err == nil {
+		if replayed {
+			observability.IdempotentReplays.Inc()
+		} else {
+			for _, t := range out.Transactions {
+				recordCommitted(false, kindOf(t))
+			}
+		}
+	}
 	return out, replayed, err
 }
 
@@ -301,6 +343,8 @@ func (s *Service) ExpireHolds(ctx context.Context, limit int) (int, error) {
 			return n, nil
 		}
 		n++
+		observability.HoldsExpired.Inc()
+		observability.Transactions.WithLabelValues("voided").Inc()
 	}
 	return n, nil
 }

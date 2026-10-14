@@ -63,7 +63,7 @@ func CompleteIdempotencyKey(ctx context.Context, db DBTX, ledgerID uuid.UUID, ke
 func DeleteExpiredIdempotencyKeys(ctx context.Context, db DBTX, ttl time.Duration, batch int) (int64, error) {
 	tag, err := db.Exec(ctx, `
 		DELETE FROM idempotency_keys WHERE ctid IN (
-			SELECT ctid FROM idempotency_keys WHERE created_at < now() - $1::interval LIMIT $2)`,
-		ttl, batch)
+			SELECT ctid FROM idempotency_keys WHERE created_at < now() - make_interval(secs => $1) LIMIT $2)`,
+		ttl.Seconds(), batch)
 	return tag.RowsAffected(), err
 }

@@ -9,12 +9,14 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
+	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/observability"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/migrations"
 )
 
@@ -28,6 +30,11 @@ type DBTX interface {
 
 // PoolOption customises the pgx pool config before connecting.
 type PoolOption func(*pgxpool.Config)
+
+// WithTracing instruments every query with OpenTelemetry spans.
+func WithTracing() PoolOption {
+	return func(c *pgxpool.Config) { c.ConnConfig.Tracer = otelpgx.NewTracer() }
+}
 
 // Connect opens a pgx connection pool and verifies connectivity.
 func Connect(ctx context.Context, url string, maxConns int32, opts ...PoolOption) (*pgxpool.Pool, error) {
@@ -73,6 +80,29 @@ func migrateDB(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// WaitForSchema blocks until every embedded migration has been applied (by
+// another process, e.g. the API on startup) or ctx is done. Processes that do
+// not migrate themselves use it to avoid running against an old schema.
+func WaitForSchema(ctx context.Context, pool *pgxpool.Pool, poll time.Duration) error {
+	db := stdlib.OpenDBFromPool(pool)
+	defer func() { _ = db.Close() }()
+	p, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
+	if err != nil {
+		return err
+	}
+	for {
+		pending, err := p.HasPending(ctx)
+		if err == nil && !pending {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for schema migrations: %w", ctx.Err())
+		case <-time.After(poll):
+		}
+	}
+}
+
 // Retryable reports whether err is a transient Postgres error
 // (serialization failure or deadlock) that is safe to retry.
 func Retryable(err error) bool {
@@ -96,6 +126,7 @@ func InTx(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) error 
 	var err error
 	for attempt := 0; attempt < MaxTxAttempts; attempt++ {
 		if attempt > 0 {
+			observability.TxRetries.Inc()
 			backoff := time.Duration(1<<attempt) * 5 * time.Millisecond
 			jitter := time.Duration(rand.Int64N(int64(backoff))) //nolint:gosec // retry jitter needs no CSPRNG
 			select {

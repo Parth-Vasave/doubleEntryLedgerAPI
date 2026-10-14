@@ -37,7 +37,13 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := store.Connect(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
+	shutdownTracing, err := observability.InitTracing(ctx, cfg.OTLPEndpoint, cfg.ServiceName)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
+
+	pool, err := store.Connect(ctx, cfg.DatabaseURL, cfg.DBMaxConns, store.WithTracing())
 	if err != nil {
 		return err
 	}
@@ -57,6 +63,9 @@ func run() error {
 			Pool:   pool,
 			Ledger: ledger.NewService(pool),
 			Auth:   auth.New(pool, cfg.AdminAPIKey, 30*time.Second),
+
+			RateLimitRPS:   cfg.RateLimitRPS,
+			RateLimitBurst: cfg.RateLimitBurst,
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

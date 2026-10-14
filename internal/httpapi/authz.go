@@ -11,6 +11,7 @@ import (
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/auth"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/domain"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/ledger"
+	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/observability"
 )
 
 // access is the permission a route requires.
@@ -40,6 +41,13 @@ func (s *Server) authorize(acc access, next http.HandlerFunc) http.Handler {
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="ledger"`)
 			s.writeError(w, r, err)
+			return
+		}
+		if ok, retryAfter := s.rl.allow(p.ID()); !ok {
+			observability.RateLimited.Inc()
+			w.Header().Set("Retry-After", retryAfter)
+			writeProblem(w, r, http.StatusTooManyRequests, "rate_limited", "Too Many Requests",
+				"rate limit exceeded for this API key")
 			return
 		}
 		var allowed bool

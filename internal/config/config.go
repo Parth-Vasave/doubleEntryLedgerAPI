@@ -33,6 +33,9 @@ type Config struct {
 	WebhookTimeout     time.Duration `env:"WEBHOOK_TIMEOUT" envDefault:"5s"`
 	WebhookMaxAttempts int           `env:"WEBHOOK_MAX_ATTEMPTS" envDefault:"10"`
 	WorkerMetricsAddr  string        `env:"WORKER_METRICS_ADDR" envDefault:":9091"`
+	// WebhookAllowPrivate permits delivery to private/loopback addresses.
+	// Only for local development; production webhooks must be public.
+	WebhookAllowPrivate bool `env:"WEBHOOK_ALLOW_PRIVATE_NETWORKS" envDefault:"false"`
 }
 
 // Load parses the environment into a Config.

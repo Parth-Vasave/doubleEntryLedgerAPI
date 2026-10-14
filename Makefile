@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 COMPOSE := docker compose -f deploy/docker-compose.yml
-DATABASE_URL ?= postgres://ledger:ledger@localhost:5432/ledger?sslmode=disable
+DATABASE_URL ?= postgres://ledger:ledger@localhost:55432/ledger?sslmode=disable
 ADMIN_API_KEY ?= dev-admin-key-change-me
 
 .PHONY: help build run test test-short lint fmt up down logs psql clean

@@ -1,0 +1,20 @@
+groups:
+  - name: ledger
+    rules:
+      - alert: LedgerBalanceDrift
+        expr: ledger_reconciliation_drift_accounts > 0
+        labels: { severity: critical }
+        annotations:
+          summary: Cached account balances disagree with the journal
+      - alert: LedgerReconciliationStale
+        expr: time() - ledger_reconciliation_last_success_timestamp_seconds > 600
+        labels: { severity: warning }
+        annotations:
+          summary: Reconciliation has not completed in 10 minutes
+      - alert: LedgerHighErrorRate
+        expr: sum(rate(ledger_http_requests_total{code=~"5.."}[5m])) / sum(rate(ledger_http_requests_total[5m])) > 0.01
+        for: 5m
+        labels: { severity: warning }
+      - alert: LedgerWebhookFailures
+        expr: increase(ledger_webhook_deliveries_total{result="failed"}[15m]) > 0
+        labels: { severity: warning }

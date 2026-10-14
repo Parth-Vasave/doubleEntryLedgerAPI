@@ -3,11 +3,13 @@ package ledger
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/domain"
+	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/observability"
 	"github.com/Parth-Vasave/doubleEntryLedgerAPI/internal/store"
 )
 
@@ -43,19 +45,56 @@ func (s *Service) CreateTransaction(ctx context.Context, ledgerID uuid.UUID, req
 			if err != nil {
 				return nil, err
 			}
-			err = store.ApplyWrite(ctx, tx, store.Write{
+			if err := store.ApplyWrite(ctx, tx, store.Write{
 				LedgerID: ledgerID,
 				NewTxns:  []*domain.Transaction{t},
 				Accounts: touched,
-			})
-			return t, err
+			}); err != nil {
+				return nil, err
+			}
+			return t, store.InsertEvents(ctx, tx, []store.Event{txnEvent(t)})
 		})
 		return err
 	})
 	if err != nil {
 		return nil, false, err
 	}
+	recordCommitted(replayed, kindOf(out))
 	return out, replayed, nil
+}
+
+// txnEvent builds the outbox event announcing t's current state.
+func txnEvent(t *domain.Transaction) store.Event {
+	typ := domain.EventTransactionPosted
+	switch {
+	case t.Status == domain.TxnPending:
+		typ = domain.EventTransactionPending
+	case t.Status == domain.TxnVoided:
+		typ = domain.EventTransactionVoided
+	case t.ReversesID != nil:
+		typ = domain.EventTransactionReversed
+	}
+	return store.Event{EventID: newID(), LedgerID: t.LedgerID, Type: typ, AggregateID: t.ID, Payload: t}
+}
+
+// kindOf is the metrics label for a newly created transaction.
+func kindOf(t *domain.Transaction) string {
+	switch {
+	case t.Status == domain.TxnPending:
+		return "pending"
+	case t.ReversesID != nil:
+		return "reversed"
+	}
+	return "posted"
+}
+
+// recordCommitted updates metrics after a successful commit.
+func recordCommitted(replayed bool, kind string) {
+	if replayed {
+		observability.IdempotentReplays.Inc()
+		return
+	}
+	observability.Transactions.WithLabelValues(kind).Inc()
 }
 
 // buildTransaction turns a validated request into a transaction whose entries
@@ -158,7 +197,9 @@ func checkTouched(accts map[uuid.UUID]*domain.Account, touched map[uuid.UUID]boo
 
 // lockAccounts locks ids (deduplicated) in a ledger and fails if any is missing.
 func lockAccounts(ctx context.Context, tx pgx.Tx, ledgerID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]*domain.Account, error) {
+	start := time.Now()
 	accts, err := store.LockAccounts(ctx, tx, ledgerID, ids)
+	observability.LockWait.Observe(time.Since(start).Seconds())
 	if err != nil {
 		return nil, err
 	}
